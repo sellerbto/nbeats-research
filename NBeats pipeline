@@ -1,0 +1,64 @@
+#NBeats pipeline
+import pandas as pd
+import numpy as np
+from neuralforecast import NeuralForecast
+from neuralforecast.models import NBEATS
+from neuralforecast.losses.pytorch import SMAPE, MASE, MAPE
+
+def prepare_m4_for_neuralforecast(csv_path, freq="M"):
+    """
+    Преобразует сырой CSV M4 в формат [unique_id, ds, y]
+    freq: "Y", "Q", "M", "W", "D", "H" (частота данных)
+    """
+    df = pd.read_csv(csv_path)
+    
+    # 1. Длинный формат: первая колонка = ID, остальные = значения
+    id_col = df.columns[0]
+    df_long = df.melt(id_vars=id_col, var_name='step', value_name='y')
+    df_long = df_long.rename(columns={id_col: 'unique_id'})
+    df_long = df_long.dropna(subset=['y'])  # убираем пустые хвосты
+    
+    # 2. Генерация ds (M4 не содержит реальных дат, используем условные)
+    freq_map = {
+        "Y": "YS", "Q": "QS", "M": "MS", 
+        "W": "W-SUN", "D": "D", "H": "H"
+    }
+    freq_pd = freq_map.get(freq, "MS")
+    
+    # Для каждого ряда создаём последовательные даты, начиная с 2000-01-01
+    df_long['ds'] = df_long.groupby('unique_id').apply(
+        lambda g: pd.date_range(start='2000-01-01', periods=len(g), freq=freq_pd)
+    ).explode().reset_index(drop=True)
+    
+    # 3. Возвращаем только нужные колонки в правильном порядке
+    return df_long[['unique_id', 'ds', 'y']]
+
+model = NBEATS(
+    h=18,
+    input_size=36,
+    loss=SMAPE(),
+    scaler_type="identity",
+    devices=1,
+    precision="16-mixed",
+    max_steps=1500,
+    enable_checkpointing=False,
+    logger=False,
+    gradient_clip_val=1.0
+)
+
+h = 18  # Monthly
+k_values = [2, 3, 4, 5]
+models = []
+
+for k in k_values:
+    models.append(NBEATS(
+        h=h,
+        input_size=k * h,
+        loss=SMAPE(),
+        scaler_type="identity",
+        start_padding_enabled=True,
+        accelerator="gpu",
+        max_steps=10,
+        enable_checkpointing=False,
+        logger=False
+    ))
